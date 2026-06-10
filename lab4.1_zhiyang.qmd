@@ -1,0 +1,340 @@
+---
+title: "Module 04 Lab 01: Visual Reporting and Storytelling"
+author: "Zhiyang Guo"
+format:
+  html:
+    toc: true
+    theme: cosmo
+execute:
+  echo: true
+  eval: true
+---
+
+## Load the Dataset
+
+```{python}
+from pyspark.sql import SparkSession
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+
+pio.renderers.default = "notebook_connected"
+
+spark = (
+    SparkSession.builder
+    .appName("LightcastData")
+    .config("spark.driver.host", "localhost")
+    .getOrCreate()
+)
+
+df = (
+    spark.read
+    .option("header", "true")
+    .option("inferSchema", "true")
+    .option("multiLine", "true")
+    .option("escape", "\"")
+    .csv("./data/lightcast_job_postings.csv")
+)
+
+df.printSchema()
+df.show(5)
+```
+## Salary Distribution by Employment Type
+
+```{python}
+salary_employment_pd = (
+    df
+    .filter((df.SALARY_FROM.isNotNull()) & (df.SALARY_FROM > 0))
+    .select("EMPLOYMENT_TYPE_NAME", "SALARY_FROM")
+    .toPandas()
+)
+
+fig = px.box(
+    salary_employment_pd,
+    x="EMPLOYMENT_TYPE_NAME",
+    y="SALARY_FROM",
+    color="EMPLOYMENT_TYPE_NAME",
+    title="Salary Distribution by Employment Type",
+    labels={
+        "EMPLOYMENT_TYPE_NAME": "Employment Type",
+        "SALARY_FROM": "Salary From"
+    },
+    template="plotly_white"
+)
+
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=14),
+    xaxis_tickangle=-30,
+    showlegend=False
+)
+
+fig.show()
+```
+
+This box plot compares salary distributions across employment types using the salary-from field. The graph helps reveal whether full-time, part-time, and mixed employment categories show different compensation ranges and salary variability.
+
+
+## Salary Distribution by Industry
+
+```{python}
+salary_industry_pd = (
+    df
+    .filter((df.SALARY_FROM.isNotNull()) & (df.SALARY_FROM > 0) & (df.NAICS2_NAME.isNotNull()))
+    .select("NAICS2_NAME", "SALARY_FROM")
+    .toPandas()
+)
+
+fig = px.box(
+    salary_industry_pd,
+    x="NAICS2_NAME",
+    y="SALARY_FROM",
+    color="NAICS2_NAME",
+    title="Salary Distribution by Industry",
+    labels={
+        "NAICS2_NAME": "Industry",
+        "SALARY_FROM": "Salary From"
+    },
+    template="plotly_white"
+)
+
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=13),
+    xaxis_tickangle=-45,
+    showlegend=False
+)
+
+fig.show()
+```
+
+This box plot compares salary distributions across industries using NAICS2 industry names. The visualization shows how compensation ranges differ across broad industries and helps identify industries with higher salary variation.
+
+## Job Posting Trends Over Time
+
+```{python}
+posting_trends_pd = (
+    df
+    .filter(df.POSTED.isNotNull())
+    .groupBy("POSTED")
+    .count()
+    .withColumnRenamed("count", "job_count")
+    .orderBy("POSTED")
+    .toPandas()
+)
+
+posting_trends_pd["POSTED"] = pd.to_datetime(posting_trends_pd["POSTED"])
+
+fig = px.line(
+    posting_trends_pd,
+    x="POSTED",
+    y="job_count",
+    title="Job Posting Trends Over Time",
+    labels={
+        "POSTED": "Posted Date",
+        "job_count": "Number of Job Postings"
+    },
+    template="plotly_white"
+)
+
+fig.update_traces(line=dict(width=3, color="#2E86AB"))
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=14)
+)
+
+fig.show()
+```
+
+This line chart shows how job postings fluctuate across posting dates. Peaks indicate dates with higher posting activity, while lower points show periods when fewer postings were recorded.
+
+## Top 10 Job Titles by Count
+
+```{python}
+top_titles_pd = (
+    df
+    .filter(df.TITLE_NAME.isNotNull())
+    .groupBy("TITLE_NAME")
+    .count()
+    .withColumnRenamed("count", "job_count")
+    .orderBy("job_count", ascending=False)
+    .limit(10)
+    .toPandas()
+)
+
+fig = px.bar(
+    top_titles_pd,
+    x="TITLE_NAME",
+    y="job_count",
+    color="job_count",
+    title="Top 10 Job Titles by Count",
+    labels={
+        "TITLE_NAME": "Job Title",
+        "job_count": "Job Count"
+    },
+    template="plotly_white",
+    color_continuous_scale="Blues"
+)
+
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=14),
+    xaxis_tickangle=-45,
+    showlegend=False
+)
+
+fig.show()
+```
+
+This bar chart identifies the most frequently posted job titles in the dataset. The highest bars represent roles with the strongest posting volume and therefore the greatest observed demand.
+
+## Remote vs On-Site Job Postings
+
+```{python}
+remote_pd = (
+    df
+    .filter(df.REMOTE_TYPE_NAME.isNotNull())
+    .groupBy("REMOTE_TYPE_NAME")
+    .count()
+    .withColumnRenamed("count", "job_count")
+    .toPandas()
+)
+
+fig = px.pie(
+    remote_pd,
+    names="REMOTE_TYPE_NAME",
+    values="job_count",
+    title="Remote vs On-Site Job Postings",
+    template="plotly_white",
+    color_discrete_sequence=px.colors.qualitative.Set2
+)
+
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=14)
+)
+
+fig.show()
+```
+
+This pie chart compares the share of postings across remote work categories. It helps show whether the job market in this dataset is dominated by on-site, remote, hybrid, or unspecified work arrangements.
+
+## Skill Demand Analysis by Industry
+
+```{python}
+from pyspark.sql.functions import explode, split, regexp_replace, trim, col
+
+skills_industry_pd = (
+    df
+    .filter(df.SKILLS_NAME.isNotNull() & df.NAICS2_NAME.isNotNull())
+    .select(
+        "NAICS2_NAME",
+        explode(split(regexp_replace("SKILLS_NAME", r'[\[\]\n"]', ""), ",")).alias("skill")
+    )
+    .withColumn("skill", trim(col("skill")))
+    .filter(col("skill") != "")
+    .groupBy("NAICS2_NAME", "skill")
+    .count()
+    .withColumnRenamed("count", "skill_count")
+    .orderBy("skill_count", ascending=False)
+    .limit(50)
+    .toPandas()
+)
+
+top_industries = skills_industry_pd["NAICS2_NAME"].value_counts().head(5).index
+skills_industry_pd = skills_industry_pd[skills_industry_pd["NAICS2_NAME"].isin(top_industries)]
+
+fig = px.bar(
+    skills_industry_pd,
+    x="NAICS2_NAME",
+    y="skill_count",
+    color="skill",
+    title="Skill Demand Analysis by Industry",
+    labels={
+        "NAICS2_NAME": "Industry",
+        "skill_count": "Skill Count",
+        "skill": "Skill"
+    },
+    template="plotly_white"
+)
+
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=13),
+    xaxis_tickangle=-30,
+    barmode="stack"
+)
+
+fig.show()
+```
+
+This stacked bar chart compares frequently mentioned skills across major industries. The visualization highlights which skills appear most often in job postings and how skill demand varies by industry.
+
+## Salary Analysis by ONET Occupation Type
+
+```{python}
+onet_salary_pd = (
+    df
+    .filter(
+        df.ONET_NAME.isNotNull() &
+        df.SALARY.isNotNull() &
+        (df.SALARY > 0)
+    )
+    .groupBy("ONET_NAME")
+    .count()
+    .withColumnRenamed("count", "job_count")
+    .orderBy("job_count", ascending=False)
+    .limit(20)
+    .toPandas()
+)
+
+salary_pd = (
+    df
+    .filter(
+        df.ONET_NAME.isNotNull() &
+        df.SALARY.isNotNull() &
+        (df.SALARY > 0)
+    )
+    .select("ONET_NAME", "SALARY")
+    .toPandas()
+)
+
+median_salary = (
+    salary_pd
+    .groupby("ONET_NAME")["SALARY"]
+    .median()
+    .reset_index()
+)
+
+onet_salary_pd = onet_salary_pd.merge(
+    median_salary,
+    on="ONET_NAME",
+    how="left"
+)
+
+fig = px.scatter(
+    onet_salary_pd,
+    x="ONET_NAME",
+    y="SALARY",
+    size="job_count",
+    color="SALARY",
+    title="Salary Analysis by ONET Occupation Type",
+    labels={
+        "ONET_NAME": "ONET Occupation",
+        "SALARY": "Median Salary",
+        "job_count": "Number of Job Postings"
+    },
+    template="plotly_white",
+    color_continuous_scale="Viridis"
+)
+
+fig.update_layout(
+    title_font_size=22,
+    font=dict(size=13),
+    xaxis_tickangle=-45
+)
+
+fig.show()
+```
+
+This Sankey diagram shows flows between broad SOC occupation groups and more specific SOC occupation categories. Thicker flows represent more job postings associated with that career pathway relationship.
